@@ -1,0 +1,286 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Audio support for the ASUS Vivobook S 15 (X1E80100 / hamoa).
+ *
+ * Modelled on x1-asus-zenbook-a14.dtsi, which is the closest sibling
+ * (same vendor, same WCD9385 + 2x WSA8845 reference design).
+ *
+ * Speakers verified on hardware (ASUS Vivobook S 15, S5507QAD).  Remaining
+ * assumptions, all of them copied from the ASUS Zenbook A14 / hamoa EVK:
+ *
+ *  - WCD9385 reset is on TLMM gpio 191 (also used by the hamoa EVK
+ *    and the Zenbook A14, so very likely identical here)
+ *  - VA macro mic-bias rail is PM8550 LDO1 (vreg_l1b_1p8)
+ *  - WSA8845 vdd-io rail is PM8550 LDO12 (vreg_l12b_1p2)
+ *  - two speaker amps (left / right) on the WSA SoundWire link (swr0)
+ *
+ * If the card does not register, comment out the WCD dai links and the
+ * wcd938x node first, then the VA link, to find out which component fails
+ * to probe.  See Workspace/DEBUG-AUDIO.md.
+ */
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+
+/*
+ * Build-time switches (pass through the cpp flags, see build-dtb.sh):
+ *
+ *   -DX1E_AUDIO_WSA_ONLY   speakers + internal DMIC only, no WCD9385.
+ *
+ * Without the WCD9385 the "MIC BIAS1"/"VA MIC BIAS1" DAPM widgets do not
+ * exist (they belong to the codec), so the DMIC has to take its bias from
+ * the VA macro's own supply widget.  Route "VA DMICx" -> "vdd-micb" instead;
+ * that is what the (equally codec-less) Lenovo Yoga Slim 7x does.  With the
+ * codec present, the Zenbook A14 routing is used unchanged.
+ */
+#ifdef X1E_AUDIO_WSA_ONLY
+#define X1E_AUDIO_ROUTING						\
+	"SpkrLeft IN", "WSA WSA_SPK1 OUT",				\
+	"SpkrRight IN", "WSA WSA_SPK2 OUT",				\
+	"VA DMIC0", "vdd-micb",						\
+	"VA DMIC1", "vdd-micb"
+#else
+/*
+ * With the WCD9385 present the mic-bias question gets interesting: nobody
+ * outside ASUS knows which bias the internal mics hang off, and each sibling
+ * machine uses a different one (Zenbook/T14s: MIC BIAS1, EVK: MIC BIAS3,
+ * T14s headset: MIC BIAS2).  Route both the VA and the TX macro DMIC inputs
+ * to every candidate, plus the VA macro's own vdd-micb supply, so a single
+ * boot lets scripts/mic-scan.sh find the working combination.  Extra supply
+ * routes only power widgets that would otherwise stay off; they are harmless.
+ */
+#define X1E_AUDIO_ROUTING						\
+	"SpkrLeft IN", "WSA WSA_SPK1 OUT",				\
+	"SpkrRight IN", "WSA WSA_SPK2 OUT",				\
+	"IN1_HPHL", "HPHL_OUT",						\
+	"IN2_HPHR", "HPHR_OUT",						\
+	"AMIC2", "MIC BIAS2",						\
+	"VA DMIC0", "MIC BIAS1", "VA DMIC1", "MIC BIAS1",		\
+	"VA DMIC2", "MIC BIAS2", "VA DMIC3", "MIC BIAS2",		\
+	"VA DMIC0", "VA MIC BIAS1", "VA DMIC1", "VA MIC BIAS1",		\
+	"VA DMIC0", "vdd-micb", "VA DMIC1", "vdd-micb",			\
+	"TX DMIC0", "MIC BIAS1", "TX DMIC1", "MIC BIAS1",		\
+	"TX DMIC0", "MIC BIAS2", "TX DMIC1", "MIC BIAS2",		\
+	"TX DMIC0", "MIC BIAS3", "TX DMIC1", "MIC BIAS3",		\
+	"TX DMIC2", "MIC BIAS1", "TX DMIC3", "MIC BIAS1",		\
+	"TX DMIC2", "MIC BIAS3", "TX DMIC3", "MIC BIAS3",		\
+	"TX DMIC0", "vdd-micb", "TX DMIC1", "vdd-micb",			\
+	"TX SWR_INPUT1", "ADC2_OUTPUT"
+#endif
+
+/ {
+#ifndef X1E_AUDIO_WSA_ONLY
+	wcd938x: audio-codec {
+		compatible = "qcom,wcd9385-codec";
+
+		pinctrl-0 = <&wcd_default>;
+		pinctrl-names = "default";
+
+		qcom,micbias1-microvolt = <1800000>;
+		qcom,micbias2-microvolt = <1800000>;
+		qcom,micbias3-microvolt = <1800000>;
+		qcom,micbias4-microvolt = <1800000>;
+		qcom,mbhc-buttons-vthreshold-microvolt = <75000 150000 237000 500000 500000 500000 500000 500000>;
+		qcom,mbhc-headset-vthreshold-microvolt = <1700000>;
+		qcom,mbhc-headphone-vthreshold-microvolt = <50000>;
+		qcom,rx-device = <&wcd_rx>;
+		qcom,tx-device = <&wcd_tx>;
+
+		reset-gpios = <&tlmm 191 GPIO_ACTIVE_LOW>;
+
+		vdd-buck-supply = <&vreg_l15b_1p8>;
+		vdd-rxtx-supply = <&vreg_l15b_1p8>;
+		vdd-io-supply = <&vreg_l15b_1p8>;
+		vdd-mic-bias-supply = <&vreg_bob1>;
+
+		#sound-dai-cells = <1>;
+	};
+#endif
+
+	sound {
+		compatible = "qcom,x1e80100-sndcard";
+		model = "X1E80100-ASUS-Vivobook-S15";
+		audio-routing = X1E_AUDIO_ROUTING;
+
+		va-dai-link {
+			link-name = "VA Capture";
+
+			codec {
+				sound-dai = <&lpass_vamacro 0>;
+			};
+
+			cpu {
+				sound-dai = <&q6apmbedai VA_CODEC_DMA_TX_0>;
+			};
+
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+
+#ifndef X1E_AUDIO_WSA_ONLY
+		wcd-capture-dai-link {
+			link-name = "WCD Capture";
+
+			codec {
+				sound-dai = <&wcd938x 1>, <&swr2 1>,
+					    <&lpass_txmacro 0>;
+			};
+
+			cpu {
+				sound-dai = <&q6apmbedai TX_CODEC_DMA_TX_3>;
+			};
+
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+
+		wcd-playback-dai-link {
+			link-name = "WCD Playback";
+
+			codec {
+				sound-dai = <&wcd938x 0>, <&swr1 0>,
+					    <&lpass_rxmacro 0>;
+			};
+
+			cpu {
+				sound-dai = <&q6apmbedai RX_CODEC_DMA_RX_0>;
+			};
+
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+#endif
+
+		wsa-dai-link {
+			link-name = "WSA Playback";
+
+			codec {
+				sound-dai = <&left_spkr>, <&right_spkr>,
+					    <&swr0 0>, <&lpass_wsamacro 0>;
+			};
+
+			cpu {
+				sound-dai = <&q6apmbedai WSA_CODEC_DMA_RX_0>;
+			};
+
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+	};
+};
+
+/*
+ * Rails that only the audio subsystem uses and which are therefore not
+ * described by the (audio-less) upstream machine DTS.  Parent supplies
+ * (vdd-l1-l4-l10-supply / vdd-l12-supply) are already declared above.
+ */
+&apps_rsc {
+	regulators-0 {
+		vreg_l1b_1p8: ldo1 {
+			regulator-name = "vreg_l1b_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l12b_1p2: ldo12 {
+			regulator-name = "vreg_l12b_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+};
+
+&lpass_tlmm {
+	spkr_01_sd_n_active: spkr-01-sd-n-active-state {
+		pins = "gpio12";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-disable;
+		output-low;
+	};
+};
+
+&lpass_vamacro {
+	/*
+	 * Both DMIC pin groups: hamoa.dtsi only defines dmic01 (gpio6/7) and
+	 * dmic23 (gpio8/9), and which pair the mic array hangs off is not public.
+	 * Muxing both lets scripts/mic-scan.sh find the right one with plain
+	 * mixer writes instead of one reboot per guess.
+	 */
+	pinctrl-0 = <&dmic01_default>, <&dmic23_default>;
+	pinctrl-names = "default";
+
+	vdd-micb-supply = <&vreg_l1b_1p8>;
+	qcom,dmic-sample-rate = <4800000>;
+};
+
+/* WSA8845 speaker amplifiers, one per channel */
+&swr0 {
+	status = "okay";
+
+	pinctrl-0 = <&wsa_swr_active>, <&spkr_01_sd_n_active>;
+	pinctrl-names = "default";
+
+	left_spkr: speaker@0,0 {
+		compatible = "sdw20217020400";
+		reg = <0 0>;
+		reset-gpios = <&lpass_tlmm 12 GPIO_ACTIVE_LOW>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "SpkrLeft";
+		vdd-1p8-supply = <&vreg_l15b_1p8>;
+		vdd-io-supply = <&vreg_l12b_1p2>;
+		qcom,port-mapping = <1 2 3 7 10 13>;
+	};
+
+	right_spkr: speaker@0,1 {
+		compatible = "sdw20217020400";
+		reg = <0 1>;
+		reset-gpios = <&lpass_tlmm 12 GPIO_ACTIVE_LOW>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "SpkrRight";
+		vdd-1p8-supply = <&vreg_l15b_1p8>;
+		vdd-io-supply = <&vreg_l12b_1p2>;
+		qcom,port-mapping = <4 5 6 7 11 13>;
+	};
+};
+
+#ifndef X1E_AUDIO_WSA_ONLY
+/* WCD9385 headset codec: RX on swr1, TX on swr2 */
+&swr1 {
+	status = "okay";
+
+	wcd_rx: codec@0,4 {
+		compatible = "sdw20217010d00";
+		reg = <0 4>;
+		qcom,rx-port-mapping = <1 2 3 4 5>;
+	};
+};
+
+&swr2 {
+	status = "okay";
+
+	wcd_tx: codec@0,3 {
+		compatible = "sdw20217010d00";
+		reg = <0 3>;
+		qcom,tx-port-mapping = <2 2 3 4>;
+	};
+};
+#endif
+
+#ifndef X1E_AUDIO_WSA_ONLY
+&tlmm {
+	wcd_default: wcd-reset-n-active-state {
+		pins = "gpio191";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-disable;
+		output-low;
+	};
+};
+#endif
