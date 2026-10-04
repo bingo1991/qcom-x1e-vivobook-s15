@@ -1,0 +1,129 @@
+--- a/ucm2/Qualcomm/x1e80100/x1e80100.conf
++++ b/ucm2/Qualcomm/x1e80100/x1e80100.conf
+@@ -2,11 +2,20 @@
+ 
+ Define.DMI_info "${sys:devices/virtual/dmi/id/board_vendor}-${sys:devices/virtual/dmi/id/product_family}-${sys:devices/virtual/dmi/id/board_name}"
+ 
++If.ASUSVivobookS15 {
++	Condition {
++		Type RegexMatch
++		String "${var:DMI_info}"
++		Regex "ASUSTeK COMPUTER.*ASUS Vivobook S 15"
++	}
++	True.Include.vivobook.File "/Qualcomm/x1e80100/ASUS-Vivobook-S15.conf"
++}
++
+ If.LENOVOT14s {
+ 	Condition {
+ 		Type RegexMatch
+ 		String "${var:DMI_info}"
+-		Regex "LENOVO.*(Think(Pad T14s Gen 6.*|Book 16 G7 QOY)|Ideapad.*5.*)|(HP.*Omnibook X.*)|ASUSTeK COMPUTER.*ASUS (Zenbook A14|Vivobook S 15)|(Microsoft Corporation.*Surface.*Microsoft Surface Laptop, 7th Edition)"
++		Regex "LENOVO.*(Think(Pad T14s Gen 6.*|Book 16 G7 QOY)|Ideapad.*5.*)|(HP.*Omnibook X.*)|ASUSTeK COMPUTER.*ASUS (Zenbook A14)|(Microsoft Corporation.*Surface.*Microsoft Surface Laptop, 7th Edition)"
+ 	}
+ 	True.Include.t14s.File "/Qualcomm/x1e80100/LENOVO-T14s.conf"
+ }
+--- /dev/null
++++ b/ucm2/Qualcomm/x1e80100/ASUS-Vivobook-S15.conf
+@@ -0,0 +1,18 @@
++Syntax 4
++
++SectionUseCase."HiFi" {
++	File "/Qualcomm/x1e80100/ASUS-Vivobook-S15-Speaker.conf"
++	Comment "Speaker playback"
++}
++
++SectionUseCase."Headphones" {
++	File "/Qualcomm/x1e80100/ASUS-Vivobook-S15-Headphones.conf"
++	Comment "Headphones playback"
++}
++
++Include.card-init.File "/lib/card-init.conf"
++Include.ctl-remap.File "/lib/ctl-remap.conf"
++Include.wsa-init.File "/codecs/wsa884x/two-speakers/init.conf"
++Include.wsam-init.File "/codecs/qcom-lpass/wsa-macro/init.conf"
++Include.wcd-init.File "/codecs/wcd938x/init.conf"
++Include.rxm-init.File "/codecs/qcom-lpass/rx-macro/init.conf"
+--- /dev/null
++++ b/ucm2/Qualcomm/x1e80100/ASUS-Vivobook-S15-Speaker.conf
+@@ -0,0 +1,35 @@
++# Speaker playback for the ASUS Vivobook S 15 (X1E80100): the two WSA8845
++# amplifiers on hw:<card>,1 (MultiMedia2).
++#
++# This is its own UCM verb (not a device inside "HiFi") on purpose: ACP can
++# only put several devices into one profile when they share the same PCM, and
++# the speakers (MultiMedia2) and the headphones (MultiMedia1) do not.  With
++# both in one verb ACP either drops the second device or refuses the whole
++# verb - see docs/audio-bringup.md.
++
++SectionVerb {
++	EnableSequence [
++		cset "name='WSA_CODEC_DMA_RX_0 Audio Mixer MultiMedia2' 1"
++	]
++
++	Include.wsae.File "/codecs/wsa884x/two-speakers/DefaultEnableSeq.conf"
++	Include.wsm1e.File "/codecs/qcom-lpass/wsa-macro/Wsa1SpeakerEnableSeq.conf"
++
++	Value {
++		TQ "HiFi"
++	}
++}
++
++SectionDevice."Speaker" {
++	Comment "Speaker playback"
++
++	Include.wsaspk.File "/codecs/wsa884x/two-speakers/SpeakerSeq.conf"
++
++	Value {
++		PlaybackChannels 2
++		PlaybackPriority 100
++		PlaybackPCM "hw:${CardId},1"
++		PlaybackMixer "default:${CardId}"
++		PlaybackMixerElem "Speakers"
++	}
++}
+--- /dev/null
++++ b/ucm2/Qualcomm/x1e80100/ASUS-Vivobook-S15-Headphones.conf
+@@ -0,0 +1,43 @@
++# Headphone playback for the ASUS Vivobook S 15 (X1E80100): the WCD9385
++# headphone output on hw:<card>,0 (MultiMedia1).
++#
++# Separate verb on purpose, see ASUS-Vivobook-S15-Speaker.conf.
++#
++# HPHL/HPHR Volume is a line_gain control: -30 dB .. +6 dB in 1.5 dB steps,
++# so 20 = 0 dB (upstream T14s value) and 16 = -6 dB.  The desktop mixer covers
++# the rest of the range.
++#
++# No JackControl: the jack pins are CARD interface controls
++# (numid=137 'Headphone Jack', 136 'Mic Jack') while UCM resolves JackControl
++# through the MIXER interface, so it never resolves - measured, plugging
++# headphones never switched anything.
++
++SectionVerb {
++	EnableSequence [
++		cset "name='RX_CODEC_DMA_RX_0 Audio Mixer MultiMedia1' 1"
++	]
++
++	Value {
++		TQ "HiFi"
++	}
++}
++
++SectionDevice."Headphones" {
++	Comment "Headphones playback"
++
++	Include.wcdhpe.File "/codecs/wcd938x/HeadphoneEnableSeq.conf"
++	Include.wcdhpd.File "/codecs/wcd938x/HeadphoneDisableSeq.conf"
++	Include.rxmhpe.File "/codecs/qcom-lpass/rx-macro/HeadphoneEnableSeq.conf"
++	Include.rxmhpd.File "/codecs/qcom-lpass/rx-macro/HeadphoneDisableSeq.conf"
++
++	EnableSequence [
++		cset "name='HPHL Volume' 16"
++		cset "name='HPHR Volume' 16"
++	]
++
++	Value {
++		PlaybackPriority 100
++		PlaybackPCM "hw:${CardId},0"
++		PlaybackMixer "default:${CardId}"
++	}
++}
