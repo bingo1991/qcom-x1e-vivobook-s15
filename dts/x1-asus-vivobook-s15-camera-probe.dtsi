@@ -1,0 +1,187 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Camera probe for the ASUS Vivobook S 15 (X1E80100).
+ *
+ * In the SoC dtsi both CCI controllers (the I2C controllers camera sensors
+ * hang off) exist but are `status = "disabled"`, so at the moment there is no
+ * I2C bus to talk to a camera at all.  Enabling them costs nothing
+ * electrically - no sensor power rail, no reset GPIO - and gives four buses:
+ *
+ *     cci0@ac15000: i2c-bus@0, i2c-bus@1
+ *     cci1@ac16000: i2c-bus@0, i2c-bus@1
+ *
+ * On the sibling X1E laptops the front camera is an OV02C10 on cci1_i2c1 at
+ * address 0x36 (ASUS Zenbook A14 and Lenovo Yoga Slim 7x both), and the
+ * Windows export of this machine says OV02C10 as well, so step one is: are
+ * there any I2C devices on those four buses, and does anything answer at 0x36?
+ *
+ * Deliberately NOT here: the sensor node itself.
+ *
+ * Its supplies and its reset GPIO are not described anywhere in this board's
+ * device tree, and the sibling boards use rails this machine's DT does not
+ * even define (vreg_l7b_2p8, vreg_l3m_1p8, vreg_l2c_0p8, vreg_l1c_1p2 - the
+ * Vivobook's dtsi has 15 LDOs, none of them those).  Copying them over means
+ * guessing which LDO feeds the camera *here*, and the sensor driver programs
+ * the rail voltage it is given: enabling the wrong LDO at 2.8 V, or driving an
+ * unknown pin as "camera reset", is how hardware gets damaged.  That mapping
+ * has to come from the ACPI DSDT - see docs/windows-info-round2.md - and then
+ * the sensor node gets added with values we actually know.
+ *
+ * Build:  make build-cam-cci   -> build/x1e80100-asus-vivobook-s15-cam-cci.dtb
+ * See docs/camera-probe.md for what to run afterwards.
+ */
+#ifdef X1E_CAMERA_PROBE
+&cci0 {
+	status = "okay";
+};
+
+&cci1 {
+	status = "okay";
+};
+#endif
+
+#ifdef X1E_CAMERA_SENSOR
+/*
+ * Full sensor node.  Every value here comes from *this machine's* Windows
+ * resources, not from a sibling board:
+ *
+ *   CAMF_RES_QRD.bin (front sensor resource sequence)
+ *       PMICVREGVOTE PPP_RESOURCE_ID_LDO7_B      -> 2.8 V  (avdd/dvdd)
+ *       PMICVREGVOTE PPP_RESOURCE_ID_LDO3_M      -> 1.8 V  (dovdd)
+ *       CLOCK cam_cc_mclk4_clk                   -> MCLK4 @ 19.2 MHz
+ *       TLMMGPIO 235 / 236 / 237                 -> 237 is the reset (the same
+ *                                                   pin the Zenbook A14 uses)
+ *   qsh_camera_ov02c10_2.json
+ *       slave address 0x36, 400 kHz
+ *
+ * LDO7_B and LDO3_M are not declared in this board's dtsi (it only lists 15
+ * LDOs), so they are added here the way the Zenbook A14 declares them.
+ *
+ * The CSIPHY supplies are the one remaining assumption: the platform resource
+ * file (CAMP_RES_QRD.bin) votes no PMIC rails at all, so csiphy4 keeps the
+ * reference-design rails (1.2 V + 0.8 V on the same PMIC).  Both are low
+ * voltage rails; if they turn out to be wrong the sensor simply never answers
+ * (see docs/camera-probe.md for the fallback: pins 235/236, other CCI bus).
+ */
+&apps_rsc {
+	/* PM8550B ldo7: the 2.8 V rail the sensor sequence votes for */
+	regulators-0 {
+		vreg_l7b_2p8: ldo7 {
+			regulator-name = "vreg_l7b_2p8";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	/* PM8010-M ldo3: the 1.8 V rail (PM8010 is not described on this board) */
+	regulators-8 {
+		compatible = "qcom,pm8010-rpmh-regulators";
+		qcom,pmic-id = "m";
+
+		vdd-l3-l4-supply = <&vreg_s4c_1p8>;
+		vdd-l7-supply = <&vreg_bob1>;
+
+		vreg_l3m_1p8: ldo3 {
+			regulator-name = "vreg_l3m_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	/* CSIPHY4 rails, as on the reference design (see the note above) */
+	regulators-1 {
+		vreg_l1c_1p2: ldo1 {
+			regulator-name = "vreg_l1c_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l2c_0p8: ldo2 {
+			regulator-name = "vreg_l2c_0p8";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <880000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+};
+
+&tlmm {
+	cam_rgb_default: cam-rgb-default-state {
+		mclk-pins {
+			pins = "gpio100";
+			function = "cam_aon";
+			drive-strength = <16>;
+			bias-disable;
+		};
+
+		reset-n-pins {
+			pins = "gpio237";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+};
+
+&camss {
+	status = "okay";
+
+	ports {
+		/* port3 -> csiphy4, as on the Zenbook A14 (same sensor, same MCLK4) */
+		port@3 {
+			csiphy4_ep: endpoint@4 {
+				reg = <4>;
+				clock-lanes = <7>;
+				data-lanes = <0 1>;
+				remote-endpoint = <&ov02c10_ep>;
+			};
+		};
+	};
+};
+
+&cci1_i2c1 {
+	camera@36 {
+		compatible = "ovti,ov02c10";
+		reg = <0x36>;
+
+		reset-gpios = <&tlmm 237 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_rgb_default>;
+
+		clocks = <&camcc CAM_CC_MCLK4_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK4_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		orientation = <0>;	/* front facing */
+		/* the module sits rotated 180 deg on this chassis - without this the
+		 * picture comes out upside down.  Same as the Dell XPS 13 9345, which
+		 * has the same sensor; the Zenbook A14/Yoga Slim 7x do not need it.
+		 * The kernel turns this into V4L2_CID_CAMERA_SENSOR_ROTATION, which
+		 * libcamera-based apps honour (raw V4L2 ones may not). */
+		rotation = <180>;
+
+		avdd-supply = <&vreg_l7b_2p8>;
+		dvdd-supply = <&vreg_l7b_2p8>;
+		dovdd-supply = <&vreg_l3m_1p8>;
+
+		port {
+			ov02c10_ep: endpoint {
+				data-lanes = <1 2>;
+				link-frequencies = /bits/ 64 <400000000>;
+				remote-endpoint = <&csiphy4_ep>;
+			};
+		};
+	};
+};
+
+&csiphy4 {
+	vdda-0p8-supply = <&vreg_l2c_0p8>;
+	vdda-1p2-supply = <&vreg_l1c_1p2>;
+	phy-type = <PHY_TYPE_DPHY>;
+
+	status = "okay";
+};
+#endif /* X1E_CAMERA_SENSOR */
