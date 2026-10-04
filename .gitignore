@@ -1,0 +1,23 @@
+# kernel source tree / source tarballs - never part of this repo
+linux-qcom-x1e-*/
+linux-qcom-x1e_*.tar.gz
+linux-*.tar.*
+*.tar.gz
+
+# build products
+out/
+build/
+*.dtb
+*.dtbo
+__pycache__/
+*.pyc
+
+# runtime state
+logs/
+*.orig-*/
+*.log
+
+# editors / OS
+*~
+*.swp
+.DS_Store
